@@ -20,13 +20,20 @@ class ProcessNode:
         self.leader_uid: UID | None = None
         self.leader_forwarded: bool = False
 
+        # Tracking for final report
+        self.cw_sent: int = 0
+        self.ccw_sent: int = 0
+        self.rounds: int = 0
+
     def _log(self, msg: str):
         print(f"[{self.uid}]: {msg}")
 
     def _broadcast_out(self):
         message = Message(self.uid, Flag.OUT, 1 << self.phase)
         self.ccw.send(message)
+        self.ccw_sent += 1
         self.cw.send(deepcopy(message))
+        self.cw_sent += 1
 
     def _handle_leader(self, msg: LeaderMessage):
         if self.uid == msg.leader_uid:
@@ -47,6 +54,7 @@ class ProcessNode:
 
         leader_message = LeaderMessage(self.leader_uid)
         self.cw.send(leader_message)
+        self.cw_sent += 1
 
         self.leader_forwarded = True
 
@@ -55,9 +63,17 @@ class ProcessNode:
             if msg.hop_count > 1:
                 forwarded_message = Message(msg.uid, msg.flag, msg.hop_count - 1)
                 forward_to.send(forwarded_message)
+                if forward_to is self.cw:
+                    self.cw_sent += 1
+                else:
+                    self.ccw_sent += 1
             elif msg.hop_count == 1:
                 return_message = Message(msg.uid, Flag.IN, 1)
                 return_to.send(return_message)
+                if return_to is self.cw:
+                    self.cw_sent += 1
+                else:
+                    self.ccw_sent += 1
         elif msg.uid == self.uid:
             self.status = Status.LEADER
             self._log("I'm the leader!")
@@ -97,13 +113,28 @@ class ProcessNode:
             forward_to = self.cw if from_ccw else self.ccw
 
             forward_to.send(Message(msg.uid, Flag.IN, 1))
+            if forward_to is self.cw:
+                self.cw_sent += 1
+            else:
+                self.ccw_sent += 1
             return
+
+    def _print_final_report(self):
+        total_sent = self.cw_sent + self.ccw_sent
+        print(f"\n=== Final Report for Node {self.uid} ===")
+        print(f"Leader UID: {self.leader_uid}")
+        print(f"Messages sent CW: {self.cw_sent}")
+        print(f"Messages sent CCW: {self.ccw_sent}")
+        print(f"Total messages sent: {total_sent}")
+        print(f"Total rounds: {self.rounds}")
+        print("=" * 40)
 
     def run(self):
         self._broadcast_out()
 
         running = True
         while running:
+            self.rounds += 1
             ready = wait([self.ccw, self.cw])
 
             for conn in ready:
@@ -119,3 +150,5 @@ class ProcessNode:
                         if self.leader_forwarded:
                             continue
                         self._handle_message(conn, msg)
+
+        self._print_final_report()
