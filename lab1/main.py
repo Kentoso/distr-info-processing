@@ -32,11 +32,6 @@ def create_ring_processes(
 
 def _process(ccw: Connection, cw: Connection):
     uid = os.getpid()
-    # print(f"[{uid}] started", flush=True)
-
-    # cw.send(("hello", uid))
-    # msg = ccw.recv()
-    # print(f"[{uid}] got {msg}", flush=True)
 
     node = ProcessNode(UID(uid), Status.UNKNOWN, ccw, cw)
     node.run()
@@ -44,5 +39,7 @@ def _process(ccw: Connection, cw: Connection):
 
 if __name__ == "__main__":
     procs = create_ring_processes(5, _process)
+    print(",".join([str(p.pid) for p in procs]))
+
     for p in procs:
         p.join()

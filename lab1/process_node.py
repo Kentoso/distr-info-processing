@@ -1,3 +1,5 @@
+from copy import deepcopy
+import time
 from models import UID, LeaderMessage, Message, RingMessage, Status, Flag
 from multiprocessing.connection import Connection, wait
 from typing import cast
@@ -18,10 +20,13 @@ class ProcessNode:
         self.leader_uid: UID | None = None
         self.leader_forwarded: bool = False
 
+    def _log(self, msg: str):
+        print(f"[{self.uid}]: {msg}")
+
     def _broadcast_out(self):
         message = Message(self.uid, Flag.OUT, 1 << self.phase)
         self.ccw.send(message)
-        self.cw.send(message)
+        self.cw.send(deepcopy(message))
 
     def _handle_leader(self, conn: Connection, msg: LeaderMessage):
         pass
@@ -34,10 +39,15 @@ class ProcessNode:
             elif msg.hop_count == 1:
                 return_message = Message(msg.uid, Flag.IN, 1)
                 return_to.send(return_message)
+            else:
+                self._log("I was skipped =(")
         elif msg.uid == self.uid:
             self.status = Status.LEADER
+            self._log("I'm a leader!")
 
     def _handle_message(self, conn: Connection, msg: Message):
+        self._log(f"got message: {msg}")
+
         from_ccw, from_cw = conn is self.ccw, conn is self.cw
 
         if msg.flag == Flag.OUT:
@@ -57,6 +67,8 @@ class ProcessNode:
 
             if self.got_in_from_ccw and self.got_in_from_cw:
                 self.phase += 1
+                self.got_in_from_ccw = False
+                self.got_in_from_cw = False
                 self._broadcast_out()
                 return
 
@@ -84,3 +96,5 @@ class ProcessNode:
                         self._handle_leader(conn, msg)
                     case Message():
                         self._handle_message(conn, msg)
+
+            time.sleep(1)
