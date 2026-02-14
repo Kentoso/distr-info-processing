@@ -28,8 +28,8 @@ class ProcessNode:
         self.ccw.send(message)
         self.cw.send(deepcopy(message))
 
-    def _handle_leader(self, conn: Connection, msg: LeaderMessage):
-        if self.leader_uid is not None and self.leader_forwarded:
+    def _handle_leader(self, msg: LeaderMessage):
+        if self.uid == msg.leader_uid:
             self._log("everyone knows that I'm the leader now!")
             return
 
@@ -113,11 +113,9 @@ class ProcessNode:
 
                 match msg:
                     case LeaderMessage():
-                        self._handle_leader(conn, msg)
+                        self._handle_leader(msg)
                         running = False
                     case Message():
                         if self.leader_forwarded:
                             continue
                         self._handle_message(conn, msg)
-
-            time.sleep(1)
