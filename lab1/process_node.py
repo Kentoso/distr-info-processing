@@ -29,7 +29,26 @@ class ProcessNode:
         self.cw.send(deepcopy(message))
 
     def _handle_leader(self, conn: Connection, msg: LeaderMessage):
-        pass
+        if self.leader_uid is not None and self.leader_forwarded:
+            self._log("everyone knows that I'm the leader now!")
+            return
+
+        self.leader_uid = msg.leader_uid
+        self._send_leader()
+
+        self._log(f"did you know that {self.leader_uid} is the leader?")
+
+    def _send_leader(self):
+        if self.leader_uid is None or self.leader_forwarded:
+            self._log(
+                f"tried to send leader. {self.leader_uid=}, {self.leader_forwarded=}"
+            )
+            return
+
+        leader_message = LeaderMessage(self.leader_uid)
+        self.cw.send(leader_message)
+
+        self.leader_forwarded = True
 
     def _out_message(self, msg: Message, forward_to: Connection, return_to: Connection):
         if msg.uid > self.uid:
@@ -39,11 +58,11 @@ class ProcessNode:
             elif msg.hop_count == 1:
                 return_message = Message(msg.uid, Flag.IN, 1)
                 return_to.send(return_message)
-            else:
-                self._log("I was skipped =(")
         elif msg.uid == self.uid:
             self.status = Status.LEADER
-            self._log("I'm a leader!")
+            self._log("I'm the leader!")
+            self.leader_uid = self.uid
+            self._send_leader()
 
     def _handle_message(self, conn: Connection, msg: Message):
         self._log(f"got message: {msg}")
@@ -83,7 +102,8 @@ class ProcessNode:
     def run(self):
         self._broadcast_out()
 
-        while True:
+        running = True
+        while running:
             ready = wait([self.ccw, self.cw])
 
             for conn in ready:
@@ -94,7 +114,10 @@ class ProcessNode:
                 match msg:
                     case LeaderMessage():
                         self._handle_leader(conn, msg)
+                        running = False
                     case Message():
+                        if self.leader_forwarded:
+                            continue
                         self._handle_message(conn, msg)
 
             time.sleep(1)
