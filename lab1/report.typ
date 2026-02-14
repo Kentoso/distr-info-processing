@@ -222,14 +222,6 @@ elif msg.uid == self.uid:
 4. Коли `LeaderMessage` повертається до лідера - всі процеси знають про лідера
 5. Всі процеси завершують роботу та виводять фінальний звіт
 
-== Складність алгоритму
-
-- *Повідомлення:* O(n log n), де n - кількість процесів
-- *Час:* O(log n) фаз
-- *Простір:* O(1) пам'яті на процес
-
-Алгоритм оптимальний за кількістю повідомлень для кільцевої топології.
-
 = Інструкції з запуску
 
 == Вимоги
@@ -246,6 +238,10 @@ cd distr-info-processing/lab1
 ```
 
 2. Запустіть програму:
+```bash
+uv run main.py
+```
+або
 ```bash
 python main.py
 ```
@@ -266,6 +262,66 @@ procs = create_ring_processes(5, _process)  # Змініть 5 на потріб
   - Кількість відправлених повідомлень проти годинникової стрілки (CCW)
   - Загальна кількість відправлених повідомлень
   - Кількість раундів виконання
+
+== Приклад виводу
+
+Нижче наведено приклад виводу програми для кільця з 3 процесів:
+
+```
+42045,42046,42047
+[42046]: got message: Message(uid=42045, flag=<Flag.OUT: 'out'>, hop_count=1)
+[42045]: got message: Message(uid=42047, flag=<Flag.OUT: 'out'>, hop_count=1)
+[42047]: got message: Message(uid=42046, flag=<Flag.OUT: 'out'>, hop_count=1)
+[42046]: got message: Message(uid=42047, flag=<Flag.OUT: 'out'>, hop_count=1)
+[42047]: got message: Message(uid=42045, flag=<Flag.OUT: 'out'>, hop_count=1)
+[42045]: got message: Message(uid=42046, flag=<Flag.OUT: 'out'>, hop_count=1)
+[42047]: got message: Message(uid=42047, flag=<Flag.IN: 'in'>, hop_count=1)
+[42047]: got message: Message(uid=42047, flag=<Flag.IN: 'in'>, hop_count=1)
+[42046]: got message: Message(uid=42046, flag=<Flag.IN: 'in'>, hop_count=1)
+[42046]: got message: Message(uid=42047, flag=<Flag.OUT: 'out'>, hop_count=2)
+[42045]: got message: Message(uid=42047, flag=<Flag.OUT: 'out'>, hop_count=2)
+[42045]: got message: Message(uid=42047, flag=<Flag.OUT: 'out'>, hop_count=1)
+[42046]: got message: Message(uid=42047, flag=<Flag.OUT: 'out'>, hop_count=1)
+[42045]: got message: Message(uid=42047, flag=<Flag.IN: 'in'>, hop_count=1)
+[42046]: got message: Message(uid=42047, flag=<Flag.IN: 'in'>, hop_count=1)
+[42047]: got message: Message(uid=42047, flag=<Flag.IN: 'in'>, hop_count=1)
+[42047]: got message: Message(uid=42047, flag=<Flag.IN: 'in'>, hop_count=1)
+[42046]: got message: Message(uid=42047, flag=<Flag.OUT: 'out'>, hop_count=4)
+[42045]: got message: Message(uid=42047, flag=<Flag.OUT: 'out'>, hop_count=4)
+[42045]: got message: Message(uid=42047, flag=<Flag.OUT: 'out'>, hop_count=3)
+[42046]: got message: Message(uid=42047, flag=<Flag.OUT: 'out'>, hop_count=3)
+[42047]: got message: Message(uid=42047, flag=<Flag.OUT: 'out'>, hop_count=2)
+[42047]: I'm the leader!
+[42045]: did you know that 42047 is the leader?
+
+=== Final Report for Node 42045 ===
+Leader UID: 42047
+Messages sent CW: 6
+Messages sent CCW: 4
+Total messages sent: 10
+Total rounds: 7
+========================================
+[42046]: did you know that 42047 is the leader?
+
+=== Final Report for Node 42046 ===
+Leader UID: 42047
+Messages sent CW: 5
+Messages sent CCW: 4
+Total messages sent: 9
+Total rounds: 8
+========================================
+[42047]: everyone knows that I'm the leader now!
+
+=== Final Report for Node 42047 ===
+Leader UID: 42047
+Messages sent CW: 4
+Messages sent CCW: 3
+Total messages sent: 7
+Total rounds: 6
+========================================
+```
+
+У цьому прикладі процес з UID 42047 (найбільший UID) був обраний лідером. Видно роботу алгоритму через фази з різними значеннями `hop_count` (1, 2, 4), поки повідомлення процесу 42047 не повернулось до нього, після чого він оголосив себе лідером та розіслав `LeaderMessage` всім іншим процесам.
 
 = Посилання
 

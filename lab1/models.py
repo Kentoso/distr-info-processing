@@ -20,7 +20,6 @@ class Message:
     uid: UID
     flag: Flag
     hop_count: int
-    # phase: int
 
 
 @dataclass
