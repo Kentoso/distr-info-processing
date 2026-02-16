@@ -38,7 +38,7 @@ def _process(ccw: Connection, cw: Connection):
 
 
 if __name__ == "__main__":
-    procs = create_ring_processes(5, _process)
+    procs = create_ring_processes(100, _process)
     print(",".join([str(p.pid) for p in procs]))
 
     for p in procs:

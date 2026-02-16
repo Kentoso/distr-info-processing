@@ -146,9 +146,11 @@ class ProcessNode:
                     case LeaderMessage():
                         self._handle_leader(msg)
                         running = False
+                        break
                     case Message():
                         if self.leader_forwarded:
                             continue
                         self._handle_message(conn, msg)
 
         self._print_final_report()
+        time.sleep(0.1)
