@@ -49,7 +49,9 @@ def run_with_counting_semaphore():
     forks = [mp.Lock() for _ in range(N)]
     strategy = CountingSemaphoreStrategy(room, forks, N)
 
-    procs = [mp.Process(target=_run_philosopher, args=(i, strategy, MEALS)) for i in range(N)]
+    procs = [
+        mp.Process(target=_run_philosopher, args=(i, strategy, MEALS)) for i in range(N)
+    ]
     for p in procs:
         p.start()
     for p in procs:
@@ -62,7 +64,9 @@ def run_with_mutex_and_fork_semaphores():
     forks = [mp.Semaphore(1) for _ in range(N)]
     strategy = MutexForkStrategy(mutex, forks, N)
 
-    procs = [mp.Process(target=_run_philosopher, args=(i, strategy, MEALS)) for i in range(N)]
+    procs = [
+        mp.Process(target=_run_philosopher, args=(i, strategy, MEALS)) for i in range(N)
+    ]
     for p in procs:
         p.start()
     for p in procs:
