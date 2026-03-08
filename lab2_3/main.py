@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 
 from mis import find_mis_tree
+from luby import find_mis_luby
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -35,6 +36,7 @@ def visualize_mis(tree: nx.Graph, mis: set, title: str, filename: str) -> None:
     print(f"Saved {filename}")
 
 
+
 def main() -> None:
     # Example 1: balanced binary tree (branching=2, height=3)
     tree1 = nx.balanced_tree(2, 3)
@@ -61,6 +63,24 @@ def main() -> None:
         "MIS — Path Graph (n=7)",
         os.path.join(DATA_DIR, "mis_path_graph.png"),
     )
+
+
+    # Example 3: Petersen graph (non-tree, MIS size = 4)
+    G3 = nx.petersen_graph()
+    mis3 = find_mis_luby(G3, seed=42)
+    print("\n=== Petersen Graph ===")
+    print(f"MIS size: {len(mis3)}")
+    print(f"MIS nodes: {sorted(mis3)}")
+    visualize_mis(G3, mis3, "MIS — Petersen Graph (Luby)", os.path.join(DATA_DIR, "mis_petersen.png"))
+
+    # Example 4: random graph G(20, 0.3)
+    G4 = nx.gnp_random_graph(20, 0.3, seed=7)
+    mis4 = find_mis_luby(G4, seed=7)
+    print("\n=== Random Graph G(20, 0.3) ===")
+    print(f"MIS size: {len(mis4)}")
+    print(f"MIS nodes: {sorted(mis4)}")
+    visualize_mis(G4, mis4, "MIS — Random Graph G(20,0.3) (Luby)", os.path.join(DATA_DIR, "mis_random_graph.png"))
+
 
 
 if __name__ == "__main__":
