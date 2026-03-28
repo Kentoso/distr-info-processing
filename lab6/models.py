@@ -66,8 +66,14 @@ class RefundMsg:
 
 
 @dataclass(frozen=True)
+class WatchMsg:
+    contract_id: str  # contract this party needs to redeem
+    hash_value: str   # watch for any contract with this hash to be redeemed
+
+
+@dataclass(frozen=True)
 class ShutdownMsg:
     pass
 
 
-PartyMsg = CreateHtlcMsg | RedeemMsg | RefundMsg | ShutdownMsg
+PartyMsg = CreateHtlcMsg | RedeemMsg | RefundMsg | WatchMsg | ShutdownMsg

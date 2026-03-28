@@ -17,6 +17,7 @@
 - *Основні бібліотеки:*
   - `multiprocessing` — для створення окремих процесів та синхронізації
   - `multiprocessing.managers` — `Manager()` для розподіленого спільного стану
+  - `threading` — фоновий потік спостереження за леджером у кожному процесі-учасникові
   - `hashlib` — SHA-256 для хешування секрету
   - `json` — структуроване логування подій
 
@@ -34,10 +35,10 @@
 
 Код розподілено по окремих модулях:
 
-- `models.py` — перерахування `ContractStatus`, `Asset`, `PartyName`; моделі повідомлень (`CreateHtlcMsg`, `RedeemMsg`, `RefundMsg`, `ShutdownMsg`); `TypedDict` `Contract`
+- `models.py` — перерахування `ContractStatus`, `Asset`, `PartyName`; моделі повідомлень (`CreateHtlcMsg`, `RedeemMsg`, `RefundMsg`, `WatchMsg`, `ShutdownMsg`); `TypedDict` `Contract`
 - `htlc.py` — хешування секрету, верифікація, функції `create_contract()`, `redeem_contract()`, `refund_contract()`
 - `ledger.py` — клас `Ledger`: операції з балансами та контрактами через Manager-проксі
-- `party.py` — клас `Party(mp.Process)`: цикл обробки повідомлень
+- `party.py` — клас `Party(mp.Process)`: цикл обробки повідомлень + фоновий потік спостереження за леджером
 - `logger.py` — функції `log_event()` (JSON до stdout) та `print_state()` (підсумок сценарію)
 - `main.py` — точка входу; три сценарії виконання
 
@@ -64,7 +65,7 @@ class ContractStatus(str, Enum):
 
 == Моделі повідомлень
 
-Вхідна черга кожного учасника типізована як `mp.Queue[PartyMsg]`, де `PartyMsg` — об'єднання чотирьох заморожених датакласів:
+Вхідна черга кожного учасника типізована як `mp.Queue[PartyMsg]`, де `PartyMsg` — об'єднання п'яти заморожених датакласів:
 
 ```python
 @dataclass(frozen=True)
@@ -87,13 +88,18 @@ class RefundMsg:
     contract_id: str
 
 @dataclass(frozen=True)
+class WatchMsg:
+    contract_id: str  # контракт, який цей учасник має погасити
+    hash_value: str   # спостерігати за будь-яким контрактом з цим хешем
+
+@dataclass(frozen=True)
 class ShutdownMsg:
     pass
 
-PartyMsg = CreateHtlcMsg | RedeemMsg | RefundMsg | ShutdownMsg
+PartyMsg = CreateHtlcMsg | RedeemMsg | RefundMsg | WatchMsg | ShutdownMsg
 ```
 
-`frozen=True` гарантує незмінність повідомлень після створення та дозволяє їх pickle-серіалізацію для передачі між процесами через чергу.
+`frozen=True` гарантує незмінність повідомлень після створення та робить їх hashable.
 
 == Контракт та Ledger
 
@@ -110,15 +116,6 @@ class Contract(TypedDict):
     timeout:     float           # абсолютний deadline (time.time())
     status:      ContractStatus
     secret:      str | None      # заповнюється при погашенні
-```
-
-`Ledger` є єдиним місцем мутації Manager-проксі. Це важливо: `Manager().dict()` перехоплює лише присвоєння верхнього рівня (`proxy[key] = value`), але *не* мутацію вкладених об'єктів (`proxy[key]["nested"] = x` не поширюється). Тому всі методи `Ledger` використовують патерн знімок–мутація–перепризначення:
-
-```python
-def debit(self, party: PartyName, asset: Asset, amount: float) -> None:
-    snapshot = dict(self._balances.get(party, {}))   # копія
-    snapshot[asset] = snapshot.get(asset, 0.0) - amount
-    self._balances[party] = snapshot                  # перепризначення верхнього рівня
 ```
 
 = Протокол Atomic Swap і HTLC
@@ -192,25 +189,30 @@ def redeem_contract(contract: Contract, secret: str) -> Contract:
 
 == Процес-учасник (Party)
 
-Кожен учасник є підкласом `mp.Process`. Метод `run()` запускається у дочірньому процесі і входить у цикл обробки повідомлень:
+Кожен учасник є підкласом `mp.Process`. При запуску він створює фоновий потік-спостерігач і входить у цикл обробки повідомлень:
 
 ```python
 class Party(mp.Process):
     def run(self) -> None:
-        set_log_lock(self._log_lock)  # ініціалізація у дочірньому процесі
+        # threading.Lock не можна серіалізувати для spawn —
+        # примітиви синхронізації ініціалізуються у дочірньому процесі.
+        self._pending_watches: list[tuple[str, str]] = []
+        self._refund_watch: list[str] = []
+        self._state_lock = threading.Lock()
+        set_log_lock(self._log_lock)
         log_event(self._party_name, EV_PARTY_START)
+        watcher = threading.Thread(target=self._watch_loop, daemon=True)
+        watcher.start()
         self._loop()
 
     def _loop(self) -> None:
         while True:
             msg: PartyMsg = self._inbox.get()
-            log_event(self._party_name, EV_MSG_RECEIVED,
-                      msg_type=type(msg).__name__,
-                      contract_id=getattr(msg, "contract_id", None))
             match msg:
                 case CreateHtlcMsg(): self._handle_create(msg)
                 case RedeemMsg():     self._handle_redeem(msg)
                 case RefundMsg():     self._handle_refund(msg)
+                case WatchMsg():      self._handle_watch(msg)
                 case ShutdownMsg():
                     log_event(self._party_name, EV_PARTY_SHUTDOWN)
                     return
@@ -218,11 +220,59 @@ class Party(mp.Process):
 
 `set_log_lock()` *обов'язково* викликається всередині `run()`, а не в `__init__()`: `__init__()` виконується у батьківському процесі, тоді як глобальна змінна `_LOG_LOCK` у дочірньому процесі ініціалізується незалежно.
 
-Диспетчеризація виконується через `match/case` на типі повідомлення (Python 3.10+), що усуває магічні рядки та вимагає явного опрацювання кожного типу.
+== Авто-погашення та авто-рефанд
+
+Фоновий потік `_watch_loop` опитує леджер кожні 100 мс і виконує дві перевірки.
+
+*Погашення за спостереженням:* якщо секрет з'явився у будь-якому контракті з відповідним `hash_value`, учасник погашає свій контракт. Це моделює реальну поведінку в блокчейн-протоколі: кожен вузол стежить за ланцюгом і реагує на розкриття секрету, не покладаючись на зовнішній сигнал.
+
+*Рефанд за таймаутом:* якщо `PENDING`-контракт, створений цим учасником, прострочений (`time.time() > timeout`), учасник повертає кошти.
+
+```python
+def _watch_loop(self) -> None:
+    while True:
+        time.sleep(0.1)
+        self._try_auto_redeem()
+        self._try_auto_refund()
+
+def _try_auto_redeem(self) -> None:
+    # Збираємо дії під локом, виконуємо поза ним —
+    # щоб _handle_redeem не тримав лок під час роботи.
+    with self._state_lock:
+        all_contracts = self._ledger.snapshot_contracts()
+        to_redeem, still_pending = [], []
+        for contract_id, hash_value in self._pending_watches:
+            secret = next((c["secret"] for c in all_contracts
+                           if c["hash_value"] == hash_value
+                           and c["secret"] is not None), None)
+            if secret is not None:
+                to_redeem.append((contract_id, secret))
+            else:
+                still_pending.append((contract_id, hash_value))
+        self._pending_watches = still_pending
+    for contract_id, secret in to_redeem:
+        self._handle_redeem(RedeemMsg(contract_id=contract_id, secret=secret))
+
+def _try_auto_refund(self) -> None:
+    with self._state_lock:
+        now = time.time()
+        to_refund, still_pending = [], []
+        for contract_id in self._refund_watch:
+            contract = self._ledger.get_contract(contract_id)
+            if contract is None or contract["status"] != ContractStatus.PENDING:
+                continue
+            if now > contract["timeout"]:
+                to_refund.append(contract_id)
+            else:
+                still_pending.append(contract_id)
+        self._refund_watch = still_pending
+    for contract_id in to_refund:
+        self._handle_refund(RefundMsg(contract_id=contract_id))
+```
 
 == Логування
 
-Кожна подія записується як один рядок JSON до stdout. Спільний `mp.Lock` запобігає перемішуванню рядків від різних процесів:
+Кожна подія записується як один рядок JSON до stdout.
 
 ```python
 def log_event(party: str, event: str, *, level: str = "INFO", **kwargs) -> None:
@@ -255,36 +305,30 @@ def log_event(party: str, event: str, *, level: str = "INFO", **kwargs) -> None:
 
 == Сценарій 1: Успішний обмін
 
-*Потік:*
-
 1. Координатор генерує секрет `x` та `H(x)`.
 2. A, B, C створюють контракти з однаковим `H(x)` і таймаутами T₁=9s, T₂=6s, T₃=3s.
-3. A погашає `C→A` з секретом `x` → `redeem_ok`.
-4. B погашає `B→C` з тим самим `x` → `redeem_ok`.
-5. C погашає `A→B` з `x` → `redeem_ok`.
+3. B отримує `WatchMsg` для `B→C`, C — для `A→B`.
+4. A погашає `C→A` з секретом `x`, розкриваючи його у леджері.
+5. B і C спостерігають за леджером і погашають свої контракти.
 
 *Очікуваний результат:* A.CoinC = 100, B.CoinA = 100, C.CoinB = 100. Всі контракти — `REDEEMED`.
 
 == Сценарій 2: Таймаут і рефанд
 
-*Потік:*
-
 1. A створює `A→B` (T₁=9s), B створює `B→C` (T₂=6s). C не створює свого контракту.
-2. Секрет `x` ніколи не розкривається — нікому немає що погашати.
-3. Після 6.5s координатор надсилає B команду рефанду → B повертає CoinB.
-4. Після ще 3s координатор надсилає A команду рефанду → A повертає CoinA.
+2. B отримує `WatchMsg` для `B→C`.
+3. Секрет `x` ніколи не розкривається.
+4. Після T₂ B повертає CoinB; після T₁ — A повертає CoinA.
 
 *Очікуваний результат:* всі баланси без змін (100 у кожного). Обидва контракти — `REFUNDED`.
 
 == Сценарій 3: Невірний секрет
 
-*Потік:*
-
-1. Всі три контракти створюються як у сценарії 1.
+1. Всі три контракти створюються як у сценарії 1; B та C отримують `WatchMsg`.
 2. A намагається погасити `C→A` з невірним секретом → `redeem_fail` (WARN).
 3. Контракт залишається у стані `PENDING`.
 4. A повторює спробу з правильним секретом → `redeem_ok`.
-5. B та C погашають свої контракти → `redeem_ok`.
+5. B і C спостерігають за леджером і погашають свої контракти.
 
 *Очікуваний результат:* такий самий, як у сценарії 1; у лозі є один рядок `WARN` з `event: "redeem_fail"`.
 
@@ -303,31 +347,51 @@ uv run python main.py
 Повний вивід — структуровані JSON-рядки від усіх трьох процесів та координатора. Фрагмент сценарію 1:
 
 ```
-{"ts":1774696553.574,"party":"COORD","level":"INFO","event":"scenario_start",
+{"ts":1774719186.268,"party":"COORD","level":"INFO","event":"scenario_start",
  "scenario":"success","secret_hash":"cb975c...","timeouts":{"A->B":9,"B->C":6,"C->A":3}}
-{"ts":1774696553.825,"party":"A","level":"INFO","event":"contract_created",
- "contract_id":"A->B:CoinA:0e89ef","sender":"A","receiver":"B",
- "asset":"CoinA","amount":100.0,"deadline":1774696562.825}
-{"ts":1774696554.21, "party":"A","level":"INFO","event":"redeem_ok",
- "contract_id":"C->A:CoinC:6b2a27","secret":"lab6_secret_alpha",
+{"ts":1774719186.892,"party":"A","level":"INFO","event":"redeem_ok",
+ "contract_id":"C->A:CoinC:dfbe39","secret":"lab6_secret_alpha",
  "asset":"CoinC","amount":100.0,"receiver":"A"}
-{"ts":1774696554.413,"party":"B","level":"INFO","event":"redeem_ok",
- "contract_id":"B->C:CoinB:e18aee","secret":"lab6_secret_alpha",
+{"ts":1774719186.926,"party":"B","level":"INFO","event":"redeem_ok",
+ "contract_id":"B->C:CoinB:0dc152","secret":"lab6_secret_alpha",
  "asset":"CoinB","amount":100.0,"receiver":"C"}
-{"ts":1774696554.617,"party":"C","level":"INFO","event":"redeem_ok",
- "contract_id":"A->B:CoinA:0e89ef","secret":"lab6_secret_alpha",
+{"ts":1774719186.926,"party":"C","level":"INFO","event":"redeem_ok",
+ "contract_id":"A->B:CoinA:061225","secret":"lab6_secret_alpha",
  "asset":"CoinA","amount":100.0,"receiver":"B"}
+```
+
+Фрагмент сценарію 2 (таймаут → рефанд):
+
+```
+{"ts":1774719187.571,"party":"COORD","level":"INFO","event":"scenario_start",
+ "scenario":"timeout","note":"C will not create its contract"}
+{"ts":1774719187.768,"party":"A","level":"INFO","event":"contract_created",
+ "contract_id":"A->B:CoinA:fc13a9","sender":"A","receiver":"B",
+ "asset":"CoinA","amount":100.0,"deadline":1774719196.766}
+{"ts":1774719187.779,"party":"B","level":"INFO","event":"contract_created",
+ "contract_id":"B->C:CoinB:2593c2","sender":"B","receiver":"C",
+ "asset":"CoinB","amount":100.0,"deadline":1774719193.778}
+{"ts":1774719193.879,"party":"B","level":"INFO","event":"refund_ok",
+ "contract_id":"B->C:CoinB:2593c2","asset":"CoinB","amount":100.0,"sender":"B"}
+{"ts":1774719196.807,"party":"A","level":"INFO","event":"refund_ok",
+ "contract_id":"A->B:CoinA:fc13a9","asset":"CoinA","amount":100.0,"sender":"A"}
 ```
 
 Фрагмент сценарію 3 (невірний секрет → WARN, потім успіх):
 
 ```
-{"ts":1774696566.066,"party":"A","level":"WARN","event":"redeem_fail",
- "contract_id":"C->A:CoinC:64a527","secret":"definitely_not_the_secret",
+{"ts":1774719198.091,"party":"A","level":"WARN","event":"redeem_fail",
+ "contract_id":"C->A:CoinC:94e26a","secret":"definitely_not_the_secret",
  "reason":"Cannot redeem: wrong secret 'definitely_not_the_secret'"}
-{"ts":1774696566.267,"party":"A","level":"INFO","event":"redeem_ok",
- "contract_id":"C->A:CoinC:64a527","secret":"lab6_secret_gamma",
+{"ts":1774719198.293,"party":"A","level":"INFO","event":"redeem_ok",
+ "contract_id":"C->A:CoinC:94e26a","secret":"lab6_secret_gamma",
  "asset":"CoinC","amount":100.0,"receiver":"A"}
+{"ts":1774719198.353,"party":"B","level":"INFO","event":"redeem_ok",
+ "contract_id":"B->C:CoinB:5753b2","secret":"lab6_secret_gamma",
+ "asset":"CoinB","amount":100.0,"receiver":"C"}
+{"ts":1774719198.356,"party":"C","level":"INFO","event":"redeem_ok",
+ "contract_id":"A->B:CoinA:17c95c","secret":"lab6_secret_gamma",
+ "asset":"CoinA","amount":100.0,"receiver":"B"}
 ```
 
 Підсумкові таблиці після кожного сценарію:
@@ -341,32 +405,30 @@ uv run python main.py
     B.CoinA = 100.0     B.CoinB = 0.0
     C.CoinB = 100.0     C.CoinC = 0.0
   Contracts:
-    [REDEEMED]  A->B:CoinA:...  A->B  CoinA 100
-    [REDEEMED]  B->C:CoinB:...  B->C  CoinB 100
-    [REDEEMED]  C->A:CoinC:...  C->A  CoinC 100
+    [REDEEMED]  A->B:CoinA:6c23a9  A->B  CoinA 100
+    [REDEEMED]  B->C:CoinB:6aec1a  B->C  CoinB 100
+    [REDEEMED]  C->A:CoinC:696915  C->A  CoinC 100
 ================================================================
   RESULT: Scenario 2 — Timeout Refund (C absent)
 ================================================================
   Balances:
     A.CoinA = 100.0     B.CoinB = 100.0     C.CoinC = 100.0
   Contracts:
-    [REFUNDED]  A->B:CoinA:...  A->B  CoinA 100
-    [REFUNDED]  B->C:CoinB:...  B->C  CoinB 100
+    [REFUNDED]  A->B:CoinA:99ced5  A->B  CoinA 100
+    [REFUNDED]  B->C:CoinB:80fb2b  B->C  CoinB 100
+================================================================
+  RESULT: Scenario 3 — Wrong Secret then Correct Redemption
+================================================================
+  Balances:
+    A.CoinA = 0.0       A.CoinC = 100.0
+    B.CoinA = 100.0     B.CoinB = 0.0
+    C.CoinB = 100.0     C.CoinC = 0.0
+  Contracts:
+    [REDEEMED]  A->B:CoinA:e2a1a6  A->B  CoinA 100
+    [REDEEMED]  B->C:CoinB:2c3afb  B->C  CoinB 100
+    [REDEEMED]  C->A:CoinC:14d95d  C->A  CoinC 100
 ================================================================
 ```
-
-= Порівняння сценаріїв
-
-#table(
-  columns: (1fr, 1fr, 1fr, 1fr),
-  [*Характеристика*], [*Сценарій 1*], [*Сценарій 2*], [*Сценарій 3*],
-  [Усі 3 контракти створено], [Так], [Ні (C відсутній)], [Так],
-  [Секрет розкрито], [Так], [Ні], [Так (після WARN)],
-  [Підсумковий стан контрактів], [REDEEMED ×3], [REFUNDED ×2], [REDEEMED ×3],
-  [Баланси змінились], [Так (ротація)], [Ні (рефанд)], [Так (ротація)],
-  [Атомарність дотримана], [Так], [Так], [Так],
-  [Подія WARN у лозі], [Ні], [Ні], [Так (`redeem_fail`)],
-)
 
 = Посилання
 

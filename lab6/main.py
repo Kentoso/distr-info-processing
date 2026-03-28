@@ -8,7 +8,7 @@ from models import (
     PartyMsg,
     CreateHtlcMsg,
     RedeemMsg,
-    RefundMsg,
+    WatchMsg,
     ShutdownMsg,
     INITIAL_AMOUNT,
 )
@@ -95,7 +95,7 @@ def run_scenario_success(log_lock: MpLock) -> None:
         for p in parties.values():
             p.start()
 
-        # Step 1: create all three HTLC contracts
+        # Step 1: create all three HTLC contracts; notify receivers to watch for the secret
         inboxes[PartyName.A].put(
             CreateHtlcMsg(
                 sender=PartyName.A,
@@ -107,6 +107,7 @@ def run_scenario_success(log_lock: MpLock) -> None:
                 contract_id=id_ab,
             )
         )
+        inboxes[PartyName.C].put(WatchMsg(contract_id=id_ab, hash_value=H))
         time.sleep(0.2)
 
         inboxes[PartyName.B].put(
@@ -120,6 +121,7 @@ def run_scenario_success(log_lock: MpLock) -> None:
                 contract_id=id_bc,
             )
         )
+        inboxes[PartyName.B].put(WatchMsg(contract_id=id_bc, hash_value=H))
         time.sleep(0.2)
 
         inboxes[PartyName.C].put(
@@ -135,17 +137,10 @@ def run_scenario_success(log_lock: MpLock) -> None:
         )
         time.sleep(0.2)
 
-        # Step 2: A redeems C→A first (shortest timeout), revealing the secret
+        # Step 2: A redeems C→A, revealing the secret on the ledger.
+        # B and C watch the ledger and auto-redeem their contracts once they see it.
         inboxes[PartyName.A].put(RedeemMsg(contract_id=id_ca, secret=SECRET))
-        time.sleep(0.2)
-
-        # Step 3: B redeems B→C (secret now visible from id_ca)
-        inboxes[PartyName.B].put(RedeemMsg(contract_id=id_bc, secret=SECRET))
-        time.sleep(0.2)
-
-        # Step 4: C redeems A→B
-        inboxes[PartyName.C].put(RedeemMsg(contract_id=id_ab, secret=SECRET))
-        time.sleep(0.2)
+        time.sleep(0.5)
 
         _shutdown(parties, inboxes)
         log_event("COORD", EV_SCENARIO_END, scenario="success")
@@ -203,6 +198,7 @@ def run_scenario_timeout(log_lock: MpLock) -> None:
                 contract_id=id_ab,
             )
         )
+        inboxes[PartyName.B].put(WatchMsg(contract_id=id_ab, hash_value=H))
         time.sleep(0.2)
 
         inboxes[PartyName.B].put(
@@ -217,15 +213,9 @@ def run_scenario_timeout(log_lock: MpLock) -> None:
             )
         )
 
-        # Wait for B's 6s lock to expire, then refund
-        time.sleep(6.5)
-        inboxes[PartyName.B].put(RefundMsg(contract_id=id_bc))
-
-        # Wait for A's 9s lock (remaining time), then refund
-        time.sleep(3.0)
-        inboxes[PartyName.A].put(RefundMsg(contract_id=id_ab))
-
-        time.sleep(0.2)
+        # C never creates its contract — secret is never revealed.
+        # A and B will auto-refund once their timeouts expire (9s and 6s).
+        time.sleep(9.5)
         _shutdown(parties, inboxes)
         log_event("COORD", EV_SCENARIO_END, scenario="timeout")
         print_state(
@@ -283,6 +273,7 @@ def run_scenario_wrong_secret(log_lock: MpLock) -> None:
                 contract_id=id_ab,
             )
         )
+        inboxes[PartyName.C].put(WatchMsg(contract_id=id_ab, hash_value=H))
         time.sleep(0.2)
 
         inboxes[PartyName.B].put(
@@ -296,6 +287,7 @@ def run_scenario_wrong_secret(log_lock: MpLock) -> None:
                 contract_id=id_bc,
             )
         )
+        inboxes[PartyName.B].put(WatchMsg(contract_id=id_bc, hash_value=H))
         time.sleep(0.2)
 
         inboxes[PartyName.C].put(
@@ -315,15 +307,9 @@ def run_scenario_wrong_secret(log_lock: MpLock) -> None:
         inboxes[PartyName.A].put(RedeemMsg(contract_id=id_ca, secret=WRONG))
         time.sleep(0.2)
 
-        # A uses correct secret — succeeds
+        # A uses correct secret — succeeds; B and C auto-redeem from ledger watch
         inboxes[PartyName.A].put(RedeemMsg(contract_id=id_ca, secret=SECRET))
-        time.sleep(0.2)
-
-        inboxes[PartyName.B].put(RedeemMsg(contract_id=id_bc, secret=SECRET))
-        time.sleep(0.2)
-
-        inboxes[PartyName.C].put(RedeemMsg(contract_id=id_ab, secret=SECRET))
-        time.sleep(0.2)
+        time.sleep(0.5)
 
         _shutdown(parties, inboxes)
         log_event("COORD", EV_SCENARIO_END, scenario="wrong_secret")
