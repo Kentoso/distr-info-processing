@@ -27,11 +27,11 @@ def visualize_shortest_path(
         max_dist = 1.0
     node_colors = [
         cm.YlOrRd(distances[n] / max_dist) if distances[n] < INF else (0.5, 0.5, 0.5, 1.0)
-        for n in sorted(G.nodes())
+        for n in G.nodes()
     ]
     labels = {
         n: f"{n}\n({'∞' if distances[n] >= INF else int(distances[n])})"
-        for n in sorted(G.nodes())
+        for n in G.nodes()
     }
     edge_labels = {(u, v): d["weight"] for u, v, d in G.edges(data=True)}
 
@@ -69,7 +69,7 @@ def visualize_coloring(
     palette = plt.get_cmap("tab10")
     node_colors = [
         palette((coloring[n] - 1) / max(n_colors, 1))
-        for n in sorted(G.nodes())
+        for n in G.nodes()
     ]
 
     plt.figure(figsize=(8, 6))

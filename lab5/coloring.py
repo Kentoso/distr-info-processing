@@ -56,28 +56,16 @@ def _worker(
     dirty: list[bool],
     dirty_lock: threading.Lock,
     barrier: threading.Barrier,
-    total_count: list[int],
-    count_lock: threading.Lock,
 ) -> None:
     rng = random.Random(tid * 9973 + id(colors))
-    local_count = 0
 
     while not stop_event.is_set():
-        local_dirty = False
-        for _ in range(N):
-            v = rng.randrange(N)
-            if _minimize(v, colors, locks, adj):
-                local_dirty = True
-                local_count += 1
-
-        if local_dirty:
+        v = rng.randrange(N)
+        if _minimize(v, colors, locks, adj):
             with dirty_lock:
                 dirty[0] = True
 
         barrier.wait()
-
-    with count_lock:
-        total_count[0] += local_count
 
 
 def run_coloring(
@@ -92,23 +80,24 @@ def run_coloring(
     dirty: list[bool] = [False]
     dirty_lock = threading.Lock()
     stop_event = threading.Event()
-    total_count: list[int] = [0]
-    count_lock = threading.Lock()
+    iterations: list[int] = [0]
+    quiet: list[int] = [0]
 
     def barrier_action() -> None:
+        iterations[0] += 1
         if not dirty[0]:
-            stop_event.set()
+            quiet[0] += 1
+            if quiet[0] >= N:
+                stop_event.set()
+        else:
+            quiet[0] = 0
         dirty[0] = False
 
     barrier = threading.Barrier(T, action=barrier_action)
     threads = [
         threading.Thread(
             target=_worker,
-            args=(
-                i, colors, locks, adj, N,
-                stop_event, dirty, dirty_lock,
-                barrier, total_count, count_lock,
-            ),
+            args=(i, colors, locks, adj, N, stop_event, dirty, dirty_lock, barrier),
         )
         for i in range(T)
     ]
@@ -117,4 +106,4 @@ def run_coloring(
     for t in threads:
         t.join()
 
-    return colors, total_count[0]
+    return colors, iterations[0]

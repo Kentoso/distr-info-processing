@@ -63,7 +63,7 @@ def main() -> None:
     print(f"  Final coloring: {list(coloring)}")
     print(f"  Colors used: {max(coloring)}")
     print(f"  Coloring valid: {valid}")
-    print(f"  Total minimization iterations: {total_iters}")
+    print(f"  Iterations until convergence: {total_iters}")
 
     visualize_coloring(
         G_col,
