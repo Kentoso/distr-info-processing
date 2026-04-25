@@ -74,23 +74,6 @@ def print_k_table(points: list) -> None:
         )
 
 
-def print_epsilon_scenarios(scenarios: list) -> None:
-    print("\n=== Fixed n: varying m and epsilon scenarios ===")
-    print(
-        f"{'target epsilon':>14} | {'m bits':>8} | {'k real':>8} | {'k int':>5} | {'theor. eps':>10} | {'emp. eps':>9}"
-    )
-    print("-" * 72)
-    for scenario in scenarios:
-        print(
-            f"{scenario.target_epsilon:>14.6f} | "
-            f"{scenario.m:>8} | "
-            f"{scenario.k_optimal_real:>8.4f} | "
-            f"{scenario.k_optimal_int:>5} | "
-            f"{scenario.theoretical_epsilon_at_k:>10.6f} | "
-            f"{scenario.empirical_epsilon_at_k:>9.6f}"
-        )
-
-
 def main() -> None:
     args = parse_args()
     ensure_output_dir(args.output_dir)
@@ -133,8 +116,6 @@ def main() -> None:
 
     print_primary_summary(args.n, args.epsilon, m, k_real, k_int)
     print_k_table(points)
-    print_epsilon_scenarios(epsilon_scenarios)
-
     print("\n=== Minima ===")
     print(
         f"Theoretical minimum at k={best_theoretical.k} "
